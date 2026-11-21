@@ -29,11 +29,11 @@ public:
 
     template <typename T>
         requires(IsIntegral<T> && !IsSame<RemoveCv<T>, bool> && IsSigned<T> && !IsSame<RemoveCv<T>, i64>)
-    BigInt(T v) noexcept : BigInt(static_cast<i64>(v)) {}
+    BigInt(T v) noexcept : BigInt(as<i64>(v)) {}
 
     template <typename T>
         requires(IsIntegral<T> && !IsSame<RemoveCv<T>, bool> && IsUnsigned<T> && !IsSame<RemoveCv<T>, u64>)
-    BigInt(T v) noexcept : BigInt(static_cast<u64>(v)) {}
+    BigInt(T v) noexcept : BigInt(as<u64>(v)) {}
 
     // Strict decimal parse: optional sign, one or more digits, no whitespace.
     [[nodiscard]] static bool try_parse(BigInt& out, StringRef s);
@@ -109,17 +109,17 @@ private:
 
         ~LimbVec() noexcept {
             if (!is_inline()) {
-                default_allocator()->free_array(m_heap, static_cast<usize>(m_cap));
+                default_allocator()->free_array(m_heap, as<usize>(m_cap));
             }
         }
 
         LimbVec(const LimbVec& o) : m_size(o.m_size) {
             if (o.m_size <= kInlineCap) {
-                m_cap = static_cast<u32>(kInlineCap);
+                m_cap = as<u32>(kInlineCap);
                 for (u32 i = 0; i < o.m_size; ++i) m_inline[i] = o.data()[i];
             } else {
                 m_cap = o.m_size;
-                m_heap = default_allocator()->alloc_array<u64>(static_cast<usize>(m_cap));
+                m_heap = default_allocator()->alloc_array<u64>(as<usize>(m_cap));
                 for (u32 i = 0; i < o.m_size; ++i) m_heap[i] = o.m_heap[i];
             }
         }
@@ -130,7 +130,7 @@ private:
             } else {
                 m_heap = o.m_heap;
                 o.m_heap = nullptr;
-                o.m_cap = static_cast<u32>(kInlineCap);
+                o.m_cap = as<u32>(kInlineCap);
             }
             o.m_size = 0;
         }
@@ -144,11 +144,11 @@ private:
                 m_size = o.m_size;
                 return *this;
             }
-            u64* fresh = default_allocator()->alloc_array<u64>(static_cast<usize>(o.m_size));
+            u64* fresh = default_allocator()->alloc_array<u64>(as<usize>(o.m_size));
             const u64* src = o.data();
             for (u32 i = 0; i < o.m_size; ++i) fresh[i] = src[i];
             if (!is_inline()) {
-                default_allocator()->free_array(m_heap, static_cast<usize>(m_cap));
+                default_allocator()->free_array(m_heap, as<usize>(m_cap));
             }
             m_heap = fresh;
             m_size = o.m_size;
@@ -159,7 +159,7 @@ private:
         LimbVec& operator=(LimbVec&& o) noexcept {
             if (this == &o) return *this;
             if (!is_inline()) {
-                default_allocator()->free_array(m_heap, static_cast<usize>(m_cap));
+                default_allocator()->free_array(m_heap, as<usize>(m_cap));
             }
             m_size = o.m_size;
             m_cap = o.m_cap;
@@ -169,7 +169,7 @@ private:
             } else {
                 m_heap = o.m_heap;
                 o.m_heap = nullptr;
-                o.m_cap = static_cast<u32>(kInlineCap);
+                o.m_cap = as<u32>(kInlineCap);
             }
             o.m_size = 0;
             return *this;
@@ -212,20 +212,20 @@ private:
 
         void reserve(usize new_cap) {
             if (new_cap <= m_cap) return;
-            const usize doubled = static_cast<usize>(m_cap) * 2;
-            const u32 target = static_cast<u32>(new_cap > doubled ? new_cap : doubled);
-            u64* fresh = default_allocator()->alloc_array<u64>(static_cast<usize>(target));
+            const usize doubled = as<usize>(m_cap) * 2;
+            const u32 target = as<u32>(new_cap > doubled ? new_cap : doubled);
+            u64* fresh = default_allocator()->alloc_array<u64>(as<usize>(target));
             const u64* src = data();
             for (u32 i = 0; i < m_size; ++i) fresh[i] = src[i];
             if (!is_inline()) {
-                default_allocator()->free_array(m_heap, static_cast<usize>(m_cap));
+                default_allocator()->free_array(m_heap, as<usize>(m_cap));
             }
             m_heap = fresh;
             m_cap = target;
         }
 
         void push_back(u64 v) {
-            if (m_size == m_cap) reserve(static_cast<usize>(m_cap) * 2);
+            if (m_size == m_cap) reserve(as<usize>(m_cap) * 2);
             data()[m_size++] = v;
         }
 
@@ -233,7 +233,7 @@ private:
             if (count > m_cap) reserve(count);
             u64* dst = data();
             for (usize i = 0; i < count; ++i) dst[i] = v;
-            m_size = static_cast<u32>(count);
+            m_size = as<u32>(count);
         }
 
         [[nodiscard]] bool operator==(const LimbVec& o) const noexcept {
@@ -250,7 +250,7 @@ private:
         u64 m_inline[kInlineCap] = {0, 0};
         u64* m_heap = nullptr;
         u32 m_size = 0;
-        u32 m_cap = static_cast<u32>(kInlineCap);
+        u32 m_cap = as<u32>(kInlineCap);
     };
 
     void normalize() noexcept;

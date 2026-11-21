@@ -46,8 +46,8 @@ i32 nlz32(u32 x) noexcept {
 
 i32 nlz64(u64 x) noexcept {
     if (x == 0) return 64;
-    const u32 hi = static_cast<u32>(x >> 32);
-    return hi != 0 ? nlz32(hi) : 32 + nlz32(static_cast<u32>(x));
+    const u32 hi = as<u32>(x >> 32);
+    return hi != 0 ? nlz32(hi) : 32 + nlz32(as<u32>(x));
 }
 
 // Full 64x64 -> 128-bit product without intrinsics or __int128 (MSVC-portable).
@@ -74,8 +74,8 @@ void to_digits32(const LimbContainer& limbs, Array<u32>& d) {
     d.clear();
     d.reserve(limbs.size() * 2);
     for (u64 l : limbs) {
-        d.push_back(static_cast<u32>(l));
-        d.push_back(static_cast<u32>(l >> 32));
+        d.push_back(as<u32>(l));
+        d.push_back(as<u32>(l >> 32));
     }
     while (!d.empty() && d.back() == 0) d.pop_back();
 }
@@ -85,7 +85,7 @@ void from_digits32(const Array<u32>& d, LimbContainer& limbs) {
     limbs.assign((d.size() + 1) / 2, 0);
     for (usize i = 0; i < d.size(); ++i) {
         if (i & 1) {
-            limbs[i >> 1] |= static_cast<u64>(d[i]) << 32;
+            limbs[i >> 1] |= as<u64>(d[i]) << 32;
         } else {
             limbs[i >> 1] |= d[i];
         }
@@ -110,10 +110,10 @@ void div_mod_digits(const Array<u32>& u, const Array<u32>& v, Array<u32>& q, Arr
         u64 k = 0;
         for (usize j = m; j-- > 0;) {
             const u64 t = (k << 32) | u[j];
-            q[j] = static_cast<u32>(t / v[0]);
+            q[j] = as<u32>(t / v[0]);
             k = t % v[0];
         }
-        r.assign(1, static_cast<u32>(k));
+        r.assign(1, as<u32>(k));
         while (q.size() > 1 && q.back() == 0) q.pop_back();
         return;
     }
@@ -136,7 +136,7 @@ void div_mod_digits(const Array<u32>& u, const Array<u32>& v, Array<u32>& q, Arr
     q.assign(m - n + 1, u32{0});
 
     for (usize j = m - n + 1; j-- > 0;) {
-        const u64 num = (static_cast<u64>(un[j + n]) << 32) | un[j + n - 1];
+        const u64 num = (as<u64>(un[j + n]) << 32) | un[j + n - 1];
         u64 qhat = num / vn[n - 1];
         u64 rhat = num % vn[n - 1];
 
@@ -151,24 +151,24 @@ void div_mod_digits(const Array<u32>& u, const Array<u32>& v, Array<u32>& q, Arr
             const u64 p = qhat * vn[i];
             const u64 sub = k + (p & 0xFFFFFFFFULL);
             const u64 cur = un[i + j];
-            un[i + j] = static_cast<u32>(cur - sub);
+            un[i + j] = as<u32>(cur - sub);
             const u64 deficit = sub > cur ? sub - cur : 0;
             k = (p >> 32) + ((deficit + 0xFFFFFFFFULL) >> 32);
         }
         const bool negative = k > un[j + n];
-        un[j + n] = static_cast<u32>(un[j + n] - k);
+        un[j + n] = as<u32>(un[j + n] - k);
 
-        q[j] = static_cast<u32>(qhat);
+        q[j] = as<u32>(qhat);
 
         if (negative) {
             q[j] -= 1;
             u64 carry = 0;
             for (usize i = 0; i < n; ++i) {
-                const u64 t = static_cast<u64>(un[i + j]) + vn[i] + carry;
-                un[i + j] = static_cast<u32>(t);
+                const u64 t = as<u64>(un[i + j]) + vn[i] + carry;
+                un[i + j] = as<u32>(t);
                 carry = t >> 32;
             }
-            un[j + n] = static_cast<u32>(un[j + n] + carry);
+            un[j + n] = as<u32>(un[j + n] + carry);
         }
     }
 
@@ -193,10 +193,10 @@ u64 factor_rng_next(u64& state) noexcept {
 BigInt pow_mod_big(const BigInt& base, const BigInt& e, const BigInt& m) {
     BigInt r = BigInt(i64{1}) % m;
     BigInt b = base % m;
-    const i32 bits = static_cast<i32>(e.bit_length());
+    const i32 bits = as<i32>(e.bit_length());
     for (i32 i = bits - 1; i >= 0; --i) {
         r = r * r % m;
-        if ((e >> static_cast<usize>(i)).low_limb() & 1ULL) {
+        if ((e >> as<usize>(i)).low_limb() & 1ULL) {
             r = r * b % m;
         }
     }
@@ -268,7 +268,7 @@ BigInt pollard_rho(const BigInt& n, const BigInt& c) {
 BigInt::BigInt(i64 v) noexcept {
     if (v == 0) return;
     m_negative = v < 0;
-    m_limbs.push_back(m_negative ? (~static_cast<u64>(v) + 1ULL) : static_cast<u64>(v));
+    m_limbs.push_back(m_negative ? (~as<u64>(v) + 1ULL) : as<u64>(v));
 }
 
 BigInt::BigInt(u64 v) noexcept {
@@ -287,7 +287,7 @@ i32 BigInt::signum() const noexcept {
 
 usize BigInt::bit_length() const noexcept {
     if (m_limbs.empty()) return 0;
-    return (m_limbs.size() - 1) * 64 + static_cast<usize>(64 - nlz64(m_limbs.back()));
+    return (m_limbs.size() - 1) * 64 + as<usize>(64 - nlz64(m_limbs.back()));
 }
 
 i32 BigInt::compare_magnitude(const BigInt& o) const noexcept {
@@ -488,7 +488,7 @@ BigInt BigInt::operator-() const {
 BigInt BigInt::operator<<(usize bits) const {
     if (is_zero()) return BigInt();
     const usize limb_off = bits / 64;
-    const u32 bit_off = static_cast<u32>(bits % 64);
+    const u32 bit_off = as<u32>(bits % 64);
     BigInt out;
     out.m_negative = m_negative;
     out.m_limbs.assign(m_limbs.size() + limb_off + (bit_off ? 1 : 0), 0);
@@ -509,7 +509,7 @@ BigInt BigInt::operator<<(usize bits) const {
 BigInt BigInt::operator>>(usize bits) const {
     if (is_zero()) return BigInt();
     const usize limb_off = bits / 64;
-    const u32 bit_off = static_cast<u32>(bits % 64);
+    const u32 bit_off = as<u32>(bits % 64);
 
     bool dropped = false;
     for (usize i = 0; i < limb_off && i < m_limbs.size(); ++i) {
@@ -630,11 +630,11 @@ bool BigInt::fits_i64(i64& out) const noexcept {
     const u64 m = m_limbs[0];
     if (m_negative) {
         if (m > (1ULL << 63)) return false;
-        out = (m == (1ULL << 63)) ? Limits<i64>::kMin : -static_cast<i64>(m);
+        out = (m == (1ULL << 63)) ? Limits<i64>::kMin : -as<i64>(m);
         return true;
     }
-    if (m > static_cast<u64>(Limits<i64>::kMax)) return false;
-    out = static_cast<i64>(m);
+    if (m > as<u64>(Limits<i64>::kMax)) return false;
+    out = as<i64>(m);
     return true;
 }
 
@@ -652,7 +652,7 @@ f64 BigInt::to_f64() const noexcept {
     if (m_limbs.empty()) return 0.0;
     const usize n = m_limbs.size();
     if (n == 1) {
-        const f64 v = static_cast<f64>(m_limbs[0]);
+        const f64 v = as<f64>(m_limbs[0]);
         return m_negative ? -v : v;
     }
     const usize bits = bit_length();
@@ -673,7 +673,7 @@ f64 BigInt::to_f64() const noexcept {
         if (m_limbs[i] != 0) sticky = true;
     }
     if ((rem11 & 0x400ULL) != 0 && (sticky || (mant53 & 1ULL) != 0)) ++mant53;
-    const f64 scaled = keel::ldexp(static_cast<f64>(mant53), static_cast<i32>(bits) - 53);
+    const f64 scaled = keel::ldexp(as<f64>(mant53), as<i32>(bits) - 53);
     return m_negative ? -scaled : scaled;
 }
 
@@ -725,7 +725,7 @@ bool BigInt::try_parse(BigInt& out, StringRef s) {
         const usize len = (pos == i) ? lead : 19;
         u64 c = 0;
         for (usize k = 0; k < len; ++k) {
-            c = c * 10ULL + static_cast<u64>(s[pos + k] - '0');
+            c = c * 10ULL + as<u64>(s[pos + k] - '0');
         }
         v = v * BigInt(kPow10[len]) + BigInt(c);
         pos += len;

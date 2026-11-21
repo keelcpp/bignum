@@ -22,11 +22,11 @@ public:
 
     template <typename T>
         requires(IsIntegral<T> && !IsSame<RemoveCv<T>, bool> && IsSigned<T> && !IsSame<RemoveCv<T>, i64>)
-    Rational(T v) noexcept : Rational(static_cast<i64>(v)) {}
+    Rational(T v) noexcept : Rational(as<i64>(v)) {}
 
     template <typename T>
         requires(IsIntegral<T> && !IsSame<RemoveCv<T>, bool> && IsUnsigned<T> && !IsSame<RemoveCv<T>, u64>)
-    Rational(T v) noexcept : Rational(static_cast<u64>(v)) {}
+    Rational(T v) noexcept : Rational(as<u64>(v)) {}
 
     // q must be non-zero (KEEL_ASSERT in debug). Moves sign to numerator and reduces by gcd.
     Rational(BigInt p, BigInt q);

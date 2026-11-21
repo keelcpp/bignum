@@ -9,7 +9,7 @@ keel::i32 g_failed = 0;
 
 void check(bool cond, const char* expr, keel::i32 line) {
     if (!cond) {
-        std::fprintf(stderr, "FAIL [line %d]: %s\n", static_cast<int>(line), expr);
+        std::fprintf(stderr, "FAIL [line %d]: %s\n", keel::as<int>(line), expr);
         ++g_failed;
     }
 }
@@ -130,7 +130,7 @@ void test_bigint_primality_and_factorize() {
         CHECK(BigInt::is_prime(fac[i].prime));
         CHECK(fac[i].exponent == 1);
         if (i > 0) CHECK(fac[i - 1].prime < fac[i].prime);
-        prod *= BigInt::pow_u64(fac[i].prime, static_cast<keel::u64>(fac[i].exponent));
+        prod *= BigInt::pow_u64(fac[i].prime, keel::as<keel::u64>(fac[i].exponent));
     }
     CHECK(prod == f64);
 
@@ -221,7 +221,7 @@ int main() {
     test_rational();
 
     if (g_failed != 0) {
-        std::fprintf(stderr, "test_bignum: %d failure(s)\n", static_cast<int>(g_failed));
+        std::fprintf(stderr, "test_bignum: %d failure(s)\n", keel::as<int>(g_failed));
         return 1;
     }
     std::printf("test_bignum: all tests passed\n");

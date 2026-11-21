@@ -9,13 +9,13 @@ Rational Rational::from_f64_bits(f64 v) {
     i32 e = 0;
     const f64 f = keel::frexp(v, &e); // v == f * 2^e, f in [0.5, 1)
     // f has at most 53 significand bits (incl. hidden bit), so f * 2^53 is an exact integer.
-    const i64 m = static_cast<i64>(f * 9007199254740992.0);
+    const i64 m = as<i64>(f * 9007199254740992.0);
     if (m == 0) return Rational(); // +-0.0
     const i32 shift = e - 53;
     if (shift >= 0) {
-        return Rational(BigInt(m) * BigInt::pow_u64(BigInt(i64{2}), static_cast<u64>(shift)), BigInt(i64{1}));
+        return Rational(BigInt(m) * BigInt::pow_u64(BigInt(i64{2}), as<u64>(shift)), BigInt(i64{1}));
     }
-    return Rational(BigInt(m), BigInt::pow_u64(BigInt(i64{2}), static_cast<u64>(-shift)));
+    return Rational(BigInt(m), BigInt::pow_u64(BigInt(i64{2}), as<u64>(-shift)));
 }
 
 f64 Rational::to_f64() const {
@@ -24,14 +24,14 @@ f64 Rational::to_f64() const {
     const usize bn = m_num.bit_length();
     const usize bd = m_den.bit_length();
     if (bn <= 53 && bd <= 53) {
-        const f64 v = static_cast<f64>(m_num.low_limb()) / static_cast<f64>(m_den.low_limb());
+        const f64 v = as<f64>(m_num.low_limb()) / as<f64>(m_den.low_limb());
         return m_num.is_negative() ? -v : v;
     }
     const BigInt n_abs = m_num.abs();
     const BigInt& d_val = m_den;
-    i32 shift = 54 - (static_cast<i32>(bn) - static_cast<i32>(bd));
-    BigInt ns = shift >= 0 ? (n_abs << static_cast<usize>(shift)) : n_abs;
-    BigInt ds = shift < 0 ? (d_val << static_cast<usize>(-shift)) : d_val;
+    i32 shift = 54 - (as<i32>(bn) - as<i32>(bd));
+    BigInt ns = shift >= 0 ? (n_abs << as<usize>(shift)) : n_abs;
+    BigInt ds = shift < 0 ? (d_val << as<usize>(-shift)) : d_val;
     if (ns < (ds << 54)) {
         ns = ns << 1;
         ++shift;
@@ -47,7 +47,7 @@ f64 Rational::to_f64() const {
     const bool guard = ((q64 >> 1) & 1ULL) != 0;
     const bool sticky = ((q64 & 1ULL) != 0) || !r.is_zero();
     if (guard && (sticky || (mant53 & 1ULL) != 0)) ++mant53;
-    const f64 scaled = keel::ldexp(static_cast<f64>(mant53), 2 - shift);
+    const f64 scaled = keel::ldexp(as<f64>(mant53), 2 - shift);
     return m_num.is_negative() ? -scaled : scaled;
 }
 
