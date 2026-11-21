@@ -1,0 +1,12 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+find_dependency(keel)
+
+include("${CMAKE_CURRENT_LIST_DIR}/keel_bignumTargets.cmake")
+
+if(TARGET keel::keel_bignum AND NOT TARGET keel::bignum)
+    add_library(keel::bignum ALIAS keel::keel_bignum)
+endif()
+
+check_required_components(keel_bignum)
