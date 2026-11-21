@@ -4,7 +4,7 @@
 #include <keel/math.h>
 #include <keel/number.h>
 
-namespace keel {
+namespace keel::bignum {
 
 namespace {
 
@@ -811,4 +811,4 @@ Array<PrimeFactor> BigInt::factorize(const BigInt& n_in, Allocator* alloc) {
     return out;
 }
 
-} // namespace keel
+} // namespace keel::bignum

@@ -2,7 +2,7 @@
 #include <keel/math.h>
 #include <keel/rational.h>
 
-namespace keel {
+namespace keel::bignum {
 
 Rational Rational::from_f64_bits(f64 v) {
     KEEL_ASSERT(keel::is_finite(v));
@@ -164,4 +164,4 @@ bool Rational::try_parse(Rational& out, StringRef s) {
     return true;
 }
 
-} // namespace keel
+} // namespace keel::bignum

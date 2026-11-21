@@ -17,7 +17,7 @@ void check(bool cond, const char* expr, keel::i32 line) {
 #define CHECK(cond) check((cond), #cond, __LINE__)
 
 void test_bigint_basic_and_sbo() {
-    using keel::BigInt;
+    using keel::bignum::BigInt;
 
     BigInt zero;
     CHECK(zero.is_zero());
@@ -54,7 +54,7 @@ void test_bigint_basic_and_sbo() {
 }
 
 void test_bigint_arith_div_shift() {
-    using keel::BigInt;
+    using keel::bignum::BigInt;
 
     BigInt a;
     BigInt b;
@@ -108,7 +108,7 @@ void test_bigint_arith_div_shift() {
 }
 
 void test_bigint_primality_and_factorize() {
-    using keel::BigInt;
+    using keel::bignum::BigInt;
 
     CHECK(!BigInt::is_prime(BigInt(-7)));
     CHECK(!BigInt::is_prime(BigInt(0)));
@@ -147,7 +147,7 @@ void test_bigint_primality_and_factorize() {
 }
 
 void test_bigint_to_f64() {
-    using keel::BigInt;
+    using keel::bignum::BigInt;
 
     CHECK(BigInt(0).to_f64() == 0.0);
     CHECK(BigInt(-42).to_f64() == -42.0);
@@ -162,8 +162,8 @@ void test_bigint_to_f64() {
 }
 
 void test_rational() {
-    using keel::BigInt;
-    using keel::Rational;
+    using keel::bignum::BigInt;
+    using keel::bignum::Rational;
 
     Rational r0;
     CHECK(r0.is_zero());

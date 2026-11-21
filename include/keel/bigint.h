@@ -5,7 +5,7 @@
 #include "keel/memory.h"
 #include "keel/string.h"
 
-namespace keel {
+namespace keel::bignum {
 
 struct PrimeFactor;
 
@@ -272,4 +272,4 @@ struct PrimeFactor {
     [[nodiscard]] bool operator!=(const PrimeFactor& o) const noexcept { return !(*this == o); }
 };
 
-} // namespace keel
+} // namespace keel::bignum

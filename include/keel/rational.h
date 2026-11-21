@@ -4,7 +4,7 @@
 #include "keel/core.h"
 #include "keel/string.h"
 
-namespace keel {
+namespace keel::bignum {
 
 // ============================================================================
 // Rational — exact rational number in canonical form.
@@ -82,4 +82,4 @@ private:
     BigInt m_den = BigInt(i64{1});
 };
 
-} // namespace keel
+} // namespace keel::bignum
