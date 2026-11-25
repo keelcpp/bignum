@@ -109,6 +109,14 @@ if(KEEL_BIGNUM_BUILD_TESTS)
     else()
         target_compile_options(test_bignum PRIVATE -Wall -Wextra -Wpedantic)
     endif()
+    if(COMMAND keel_enforce_guidelines)
+        keel_enforce_guidelines(test_bignum
+            SCOPE ALL
+            BAN_RAW_INTS ALL
+            BAN_RAW_FLOATS ALL
+            WARNINGS OFF
+        )
+    endif()
     add_test(NAME test_bignum COMMAND test_bignum)
 
     get_target_property(KEEL_CORE_INC_DIRS keel::keel INTERFACE_INCLUDE_DIRECTORIES)
