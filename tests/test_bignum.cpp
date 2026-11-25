@@ -304,6 +304,8 @@ void test_bigint_radix_hex_and_bytes() {
     CHECK(h.to_hex(false, true) == "-0x1a2b");
     CHECK(BigInt(0).to_hex(false, true) == "0x0");
     CHECK(BigInt::try_parse_hex(h, "+ff") && h == BigInt(255));
+    CHECK(BigInt::try_parse_hex(h, "-0x0") && h.is_zero() && !h.is_negative());
+    CHECK(BigInt::try_parse_hex(h, "+0X0") && h.is_zero() && !h.is_negative());
     CHECK(!BigInt::try_parse_hex(h, "0x"));
     CHECK(!BigInt::try_parse_hex(h, "-0x"));
     CHECK(!BigInt::try_parse_hex(h, "0x-1"));
@@ -510,6 +512,8 @@ void test_rational() {
     CHECK(Rational::pow_i64(Rational(-2, 3), -3).value() == Rational(-27, 8));
     CHECK(Rational::pow_i64(Rational(0), 0).value() == Rational(1));
     CHECK(!Rational::pow_i64(Rational(0), -1).has_value());
+    CHECK(Rational::pow_i64(Rational(1), keel::Limits<keel::i64>::kMin).value() == Rational(1));
+    CHECK(Rational::pow_i64(Rational(-1), keel::Limits<keel::i64>::kMin).value() == Rational(1));
 
     keel::i64 out = 0;
     CHECK(Rational(-7, 1).fits_i64(out) && out == -7);
@@ -776,6 +780,18 @@ keel::i32 run_batch_file(keel::StringRef path) {
             }
         } else if (cmd == "PRIME") {
             keel::println("{}", BigInt::is_prime(parse_bi(toks[1])) ? 1 : 0);
+        } else if (cmd == "FACTORIZE") {
+            auto fac = BigInt::factorize(parse_bi(toks[1]));
+            keel::String line_out;
+            for (keel::usize i = 0; i < fac.size(); ++i) {
+                if (i > 0) line_out.push_back(' ');
+                line_out.append(fac[i].prime.to_string());
+                line_out.push_back('^');
+                char ebuf[16];
+                const keel::usize en = keel::format_i64(ebuf, sizeof(ebuf), keel::as<keel::i64>(fac[i].exponent));
+                line_out.append(keel::StringRef(ebuf, en));
+            }
+            keel::println("{}", line_out.empty() ? keel::StringRef("1") : line_out.as_ref());
         } else if (cmd == "GENPRIME") {
             const keel::u64 bits = parse_u64(toks[1]);
             auto p = BigInt::random_prime(keel::as<keel::usize>(bits));

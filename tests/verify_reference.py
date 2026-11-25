@@ -374,6 +374,31 @@ def main() -> int:
 
         add_custom(f"GENPRIME {bits}", check_prime)
 
+    # 9. Factorization differential checks (product == n, strictly ascending prime factors).
+    fac_targets = [
+        1, 2, 3, 4, 360, 561, 65537, (1 << 32) + 1, (1 << 64) - 1,
+        1000000007 * 1000000009,
+    ]
+    for _ in range(15):
+        fac_targets.append(rng.getrandbits(rng.choice([24, 48, 64, 80])) + 2)
+    for n_val in fac_targets:
+        def check_fac(out: str, target=n_val) -> bool:
+            if target == 1:
+                return out == "1"
+            parts = out.split()
+            prod = 1
+            prev_p = 0
+            for tok in parts:
+                p_s, e_s = tok.split("^")
+                p, e = int(p_s), int(e_s)
+                if p <= prev_p or e <= 0 or not miller_rabin_py(p):
+                    return False
+                prev_p = p
+                prod *= p ** e
+            return prod == target
+
+        add_custom(f"FACTORIZE {n_val}", check_fac)
+
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".txt", delete=False) as tf:
         batch_path = Path(tf.name)
         tf.write("\n".join(commands) + "\n")
