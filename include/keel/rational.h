@@ -2,6 +2,7 @@
 
 #include "keel/bigint.h"
 #include "keel/core.h"
+#include "keel/optional.h"
 #include "keel/string.h"
 
 namespace keel::bignum {
@@ -35,16 +36,29 @@ public:
     // Denominator zero or malformed input returns false.
     [[nodiscard]] static bool try_parse(Rational& out, StringRef s);
 
+    // Exact decimal / scientific notation parse (e.g. "0.1", "-3.14", ".5", "1.25e-6", "42").
+    // Rejects whitespace or malformed strings.
+    [[nodiscard]] static bool try_parse_decimal(Rational& out, StringRef s);
+
     // Exact lossless rational value of a finite IEEE-754 double (m * 2^e).
     [[nodiscard]] static Rational from_f64_bits(f64 v);
 
-    // Correctly rounded IEEE-754 double (scale-invariant for arbitrary bit lengths).
+    // Correctly rounded IEEE-754 double (single rounding for normals and subnormals;
+    // scale-invariant for arbitrary bit lengths).
     [[nodiscard]] f64 to_f64() const;
 
     [[nodiscard]] bool is_zero() const noexcept { return m_num.is_zero(); }
+    [[nodiscard]] bool is_integer() const noexcept { return m_den == BigInt(i64{1}); }
     [[nodiscard]] i32 signum() const noexcept { return m_num.signum(); }
     [[nodiscard]] const BigInt& num() const noexcept { return m_num; }
     [[nodiscard]] const BigInt& den() const noexcept { return m_den; }
+
+    [[nodiscard]] BigInt floor() const;
+    [[nodiscard]] BigInt ceil() const;
+    [[nodiscard]] BigInt trunc() const;
+
+    // Reciprocal 1 / (*this). Returns kNullOpt when zero.
+    [[nodiscard]] Optional<Rational> inv() const;
 
     [[nodiscard]] bool fits_i64(i64& out) const noexcept; // denominator 1, numerator fits
 
@@ -52,6 +66,7 @@ public:
     [[nodiscard]] u64 hash_bits() const noexcept;
 
     [[nodiscard]] static Rational pow_u64(const Rational& base, u64 exp);
+    [[nodiscard]] static Optional<Rational> pow_i64(const Rational& base, i64 exp);
 
     [[nodiscard]] String to_string(Allocator* alloc = nullptr) const; // "p" if den == 1, else "p/q"
 

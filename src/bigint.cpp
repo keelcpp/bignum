@@ -1,14 +1,16 @@
 #include <keel/algo.h>
 #include <keel/bigint.h>
+#include <keel/bits.h>
 #include <keel/core.h>
 #include <keel/math.h>
 #include <keel/number.h>
+#include <keel/os_random.h>
 
 namespace keel::bignum {
 
 namespace {
 
-constexpr u64 kPow10_19 = 10000000000000000000ULL; // 10^19 < 2^64
+constexpr usize kKaratsubaThreshold = 32;
 
 const u64 kPow10[20] = {
     1ULL,
@@ -33,21 +35,21 @@ const u64 kPow10[20] = {
     10000000000000000000ULL,
 };
 
-i32 nlz32(u32 x) noexcept {
-    i32 n = 0;
-    if (x == 0) return 32;
-    if ((x >> 16) == 0) { n += 16; x <<= 16; }
-    if ((x >> 24) == 0) { n += 8;  x <<= 8; }
-    if ((x >> 28) == 0) { n += 4;  x <<= 4; }
-    if ((x >> 30) == 0) { n += 2;  x <<= 2; }
-    if ((x >> 31) == 0) { n += 1; }
-    return n;
-}
+constexpr char kDigitsLower[36] = {
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h',
+    'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
+};
 
-i32 nlz64(u64 x) noexcept {
-    if (x == 0) return 64;
-    const u32 hi = as<u32>(x >> 32);
-    return hi != 0 ? nlz32(hi) : 32 + nlz32(as<u32>(x));
+constexpr char kDigitsUpper[36] = {
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H',
+    'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
+};
+
+i32 decode_digit(char ch) noexcept {
+    if (ch >= '0' && ch <= '9') return as<i32>(ch - '0');
+    if (ch >= 'a' && ch <= 'z') return 10 + as<i32>(ch - 'a');
+    if (ch >= 'A' && ch <= 'Z') return 10 + as<i32>(ch - 'A');
+    return -1;
 }
 
 // Full 64x64 -> 128-bit product without intrinsics or __int128 (MSVC-portable).
@@ -118,7 +120,7 @@ void div_mod_digits(const Array<u32>& u, const Array<u32>& v, Array<u32>& q, Arr
         return;
     }
 
-    const i32 s = nlz32(v[n - 1]);
+    const i32 s = keel::countl_zero(v[n - 1]);
     Array<u32> vn(n);
     Array<u32> un(m + 1, u32{0});
 
@@ -190,14 +192,49 @@ u64 factor_rng_next(u64& state) noexcept {
     return state * 0x2545F4914F6CDD1DULL;
 }
 
-BigInt pow_mod_big(const BigInt& base, const BigInt& e, const BigInt& m) {
-    BigInt r = BigInt(i64{1}) % m;
-    BigInt b = base % m;
-    const i32 bits = as<i32>(e.bit_length());
-    for (i32 i = bits - 1; i >= 0; --i) {
-        r = r * r % m;
-        if ((e >> as<usize>(i)).low_limb() & 1ULL) {
-            r = r * b % m;
+// Fast modular exponentiation for non-negative exponent e and modulus m > 1.
+BigInt pow_mod_pos(const BigInt& base, const BigInt& e, const BigInt& m) {
+    BigInt b = BigInt::mod_euclid(base, m);
+    if (e.is_zero()) return BigInt(i64{1});
+    if (b.is_zero()) return BigInt(i64{0});
+
+    const usize bits = e.bit_length();
+    if (bits < 32) {
+        BigInt r(i64{1});
+        for (usize i = bits; i-- > 0;) {
+            r = (r * r) % m;
+            if (e.test_bit(i)) {
+                r = (r * b) % m;
+            }
+        }
+        return r;
+    }
+
+    // 4-bit fixed window exponentiation.
+    BigInt table[16];
+    table[0] = BigInt(i64{1});
+    table[1] = b;
+    for (usize k = 2; k < 16; ++k) {
+        table[k] = (table[k - 1] * b) % m;
+    }
+
+    BigInt r(i64{1});
+    const usize top_nib = (bits - 1) / 4;
+    for (usize nib = top_nib + 1; nib-- > 0;) {
+        if (nib != top_nib) {
+            r = (r * r) % m;
+            r = (r * r) % m;
+            r = (r * r) % m;
+            r = (r * r) % m;
+        }
+        const usize base_bit = nib * 4;
+        u32 w = 0;
+        if (e.test_bit(base_bit + 3)) w |= 8u;
+        if (e.test_bit(base_bit + 2)) w |= 4u;
+        if (e.test_bit(base_bit + 1)) w |= 2u;
+        if (e.test_bit(base_bit)) w |= 1u;
+        if (w != 0u) {
+            r = (r * table[w]) % m;
         }
     }
     return r;
@@ -207,16 +244,12 @@ BigInt pow_mod_big(const BigInt& base, const BigInt& e, const BigInt& m) {
 bool strong_probably_prime(const BigInt& n, const BigInt& a) {
     const BigInt one(i64{1});
     const BigInt n_minus_1 = n - one;
-    BigInt d = n_minus_1;
-    i32 s = 0;
-    while ((d.low_limb() & 1ULL) == 0) {
-        d = d >> 1;
-        ++s;
-    }
-    BigInt x = pow_mod_big(a, d, n);
+    const usize s = n_minus_1.trailing_zeros();
+    const BigInt d = n_minus_1 >> s;
+    BigInt x = pow_mod_pos(a, d, n);
     if (x == one || x == n_minus_1) return true;
-    for (i32 r = 1; r < s; ++r) {
-        x = x * x % n;
+    for (usize r = 1; r < s; ++r) {
+        x = (x * x) % n;
         if (x == n_minus_1) return true;
     }
     return false;
@@ -287,7 +320,74 @@ i32 BigInt::signum() const noexcept {
 
 usize BigInt::bit_length() const noexcept {
     if (m_limbs.empty()) return 0;
-    return (m_limbs.size() - 1) * 64 + as<usize>(64 - nlz64(m_limbs.back()));
+    return (m_limbs.size() - 1) * 64 + as<usize>(64 - keel::countl_zero(m_limbs.back()));
+}
+
+usize BigInt::trailing_zeros() const noexcept {
+    if (m_limbs.empty()) return 0;
+    for (usize i = 0; i < m_limbs.size(); ++i) {
+        if (m_limbs[i] != 0) {
+            return i * 64 + as<usize>(keel::countr_zero(m_limbs[i]));
+        }
+    }
+    return 0;
+}
+
+usize BigInt::popcount() const noexcept {
+    usize total = 0;
+    for (u64 l : m_limbs) {
+        total += as<usize>(keel::popcount(l));
+    }
+    return total;
+}
+
+bool BigInt::test_bit(usize bit_index) const noexcept {
+    const usize limb = bit_index / 64;
+    const u32 off = as<u32>(bit_index % 64);
+    if (!m_negative) {
+        if (limb >= m_limbs.size()) return false;
+        return ((m_limbs[limb] >> off) & 1ULL) != 0;
+    }
+    const usize tz = trailing_zeros();
+    if (bit_index < tz) return false;
+    if (bit_index == tz) return true;
+    const bool mag_bit = (limb < m_limbs.size()) && (((m_limbs[limb] >> off) & 1ULL) != 0);
+    return !mag_bit;
+}
+
+void BigInt::set_bit(usize bit_index) {
+    if (!m_negative) {
+        const usize limb = bit_index / 64;
+        const u32 off = as<u32>(bit_index % 64);
+        if (limb >= m_limbs.size()) m_limbs.resize(limb + 1, 0);
+        m_limbs[limb] |= (1ULL << off);
+        return;
+    }
+    *this |= (BigInt(u64{1}) << bit_index);
+}
+
+void BigInt::clear_bit(usize bit_index) {
+    if (!m_negative) {
+        const usize limb = bit_index / 64;
+        const u32 off = as<u32>(bit_index % 64);
+        if (limb >= m_limbs.size()) return;
+        m_limbs[limb] &= ~(1ULL << off);
+        normalize();
+        return;
+    }
+    *this &= ~(BigInt(u64{1}) << bit_index);
+}
+
+void BigInt::flip_bit(usize bit_index) {
+    if (!m_negative) {
+        const usize limb = bit_index / 64;
+        const u32 off = as<u32>(bit_index % 64);
+        if (limb >= m_limbs.size()) m_limbs.resize(limb + 1, 0);
+        m_limbs[limb] ^= (1ULL << off);
+        normalize();
+        return;
+    }
+    *this ^= (BigInt(u64{1}) << bit_index);
 }
 
 i32 BigInt::compare_magnitude(const BigInt& o) const noexcept {
@@ -347,6 +447,126 @@ BigInt BigInt::sub_magnitude(const BigInt& a, const BigInt& b) {
     return out;
 }
 
+BigInt BigInt::slice_limbs(const BigInt& a, usize start, usize count) {
+    BigInt out;
+    if (start >= a.m_limbs.size() || count == 0) return out;
+    const usize rem = a.m_limbs.size() - start;
+    const usize n = count < rem ? count : rem;
+    out.m_limbs.reserve(n);
+    for (usize i = 0; i < n; ++i) {
+        out.m_limbs.push_back(a.m_limbs[start + i]);
+    }
+    out.normalize();
+    return out;
+}
+
+BigInt BigInt::mul_magnitude(const BigInt& a, const BigInt& b) {
+    const usize na = a.m_limbs.size();
+    const usize nb = b.m_limbs.size();
+    if (na == 0 || nb == 0) return BigInt();
+
+    if (na < kKaratsubaThreshold || nb < kKaratsubaThreshold) {
+        BigInt out;
+        out.m_limbs.assign(na + nb, 0);
+        for (usize i = 0; i < na; ++i) {
+            u64 carry = 0;
+            for (usize j = 0; j < nb; ++j) {
+                u64 lo = 0;
+                u64 hi = 0;
+                mulu64(a.m_limbs[i], b.m_limbs[j], &lo, &hi);
+                const u64 t = out.m_limbs[i + j] + lo;
+                const u64 c1 = (t < lo) ? 1ULL : 0ULL;
+                const u64 t2 = t + carry;
+                const u64 c2 = (t2 < t) ? 1ULL : 0ULL;
+                out.m_limbs[i + j] = t2;
+                carry = hi + c1 + c2;
+            }
+            usize k = i + nb;
+            while (carry != 0) {
+                const u64 t = out.m_limbs[k] + carry;
+                carry = (t < carry) ? 1ULL : 0ULL;
+                out.m_limbs[k] = t;
+                ++k;
+            }
+        }
+        out.normalize();
+        return out;
+    }
+
+    const usize max_n = na > nb ? na : nb;
+    const usize m = max_n / 2;
+
+    // Unbalanced split: avoid redundant Karatsuba work when one operand fits in m limbs.
+    if (m >= nb) {
+        const BigInt a0 = slice_limbs(a, 0, m);
+        const BigInt a1 = slice_limbs(a, m, na - m);
+        const BigInt lo = mul_magnitude(a0, b);
+        const BigInt hi = mul_magnitude(a1, b);
+        return add_magnitude(lo, hi << (m * 64));
+    }
+    if (m >= na) {
+        const BigInt b0 = slice_limbs(b, 0, m);
+        const BigInt b1 = slice_limbs(b, m, nb - m);
+        const BigInt lo = mul_magnitude(a, b0);
+        const BigInt hi = mul_magnitude(a, b1);
+        return add_magnitude(lo, hi << (m * 64));
+    }
+
+    const BigInt a0 = slice_limbs(a, 0, m);
+    const BigInt a1 = slice_limbs(a, m, na - m);
+    const BigInt b0 = slice_limbs(b, 0, m);
+    const BigInt b1 = slice_limbs(b, m, nb - m);
+
+    const BigInt z0 = mul_magnitude(a0, b0);
+    const BigInt z2 = mul_magnitude(a1, b1);
+    const BigInt s_a = add_magnitude(a0, a1);
+    const BigInt s_b = add_magnitude(b0, b1);
+    const BigInt z1 = mul_magnitude(s_a, s_b);
+    const BigInt mid = sub_magnitude(sub_magnitude(z1, z2), z0);
+
+    BigInt res = add_magnitude(z0, mid << (m * 64));
+    res = add_magnitude(res, z2 << (m * 128));
+    res.normalize();
+    return res;
+}
+
+u32 BigInt::div_mod_u32_mag(const BigInt& a, u32 d, BigInt& q) {
+    KEEL_ASSERT(d != 0u);
+    BigInt q_out;
+    if (a.m_limbs.empty()) {
+        q = BigInt();
+        return 0u;
+    }
+    q_out.m_limbs.assign(a.m_limbs.size(), 0);
+    u64 rem = 0;
+    const u64 div = as<u64>(d);
+    for (usize i = a.m_limbs.size(); i-- > 0;) {
+        const u64 limb = a.m_limbs[i];
+        const u64 hi_cur = (rem << 32) | (limb >> 32);
+        const u64 q_hi = hi_cur / div;
+        rem = hi_cur % div;
+        const u64 lo_cur = (rem << 32) | (limb & 0xFFFFFFFFULL);
+        const u64 q_lo = lo_cur / div;
+        rem = lo_cur % div;
+        q_out.m_limbs[i] = (q_hi << 32) | q_lo;
+    }
+    q_out.normalize();
+    q = keel::move(q_out);
+    return as<u32>(rem);
+}
+
+u32 BigInt::mod_u32_mag(const BigInt& a, u32 d) noexcept {
+    KEEL_ASSERT(d != 0u);
+    u64 rem = 0;
+    const u64 div = as<u64>(d);
+    for (usize i = a.m_limbs.size(); i-- > 0;) {
+        const u64 limb = a.m_limbs[i];
+        rem = ((rem << 32) | (limb >> 32)) % div;
+        rem = ((rem << 32) | (limb & 0xFFFFFFFFULL)) % div;
+    }
+    return as<u32>(rem);
+}
+
 BigInt operator+(const BigInt& a, const BigInt& b) {
     BigInt out;
     if (a.m_negative == b.m_negative) {
@@ -369,37 +589,32 @@ BigInt operator+(const BigInt& a, const BigInt& b) {
 }
 
 BigInt operator-(const BigInt& a, const BigInt& b) {
-    BigInt neg_b = b;
-    neg_b.m_negative = !b.m_negative;
-    neg_b.normalize();
-    return a + neg_b;
+    if (b.is_zero()) return a;
+    if (a.is_zero()) return -b;
+    const bool neg_b = !b.m_negative;
+    BigInt out;
+    if (a.m_negative == neg_b) {
+        out = BigInt::add_magnitude(a, b);
+        out.m_negative = a.m_negative;
+        out.normalize();
+        return out;
+    }
+    const i32 cmp = a.compare_magnitude(b);
+    if (cmp == 0) return BigInt();
+    if (cmp > 0) {
+        out = BigInt::sub_magnitude(a, b);
+        out.m_negative = a.m_negative;
+    } else {
+        out = BigInt::sub_magnitude(b, a);
+        out.m_negative = neg_b;
+    }
+    out.normalize();
+    return out;
 }
 
 BigInt operator*(const BigInt& a, const BigInt& b) {
     if (a.is_zero() || b.is_zero()) return BigInt();
-    BigInt out;
-    out.m_limbs.assign(a.m_limbs.size() + b.m_limbs.size(), 0);
-    for (usize i = 0; i < a.m_limbs.size(); ++i) {
-        u64 carry = 0;
-        for (usize j = 0; j < b.m_limbs.size(); ++j) {
-            u64 lo = 0;
-            u64 hi = 0;
-            mulu64(a.m_limbs[i], b.m_limbs[j], &lo, &hi);
-            const u64 t = out.m_limbs[i + j] + lo;
-            const u64 c1 = (t < lo) ? 1ULL : 0ULL;
-            const u64 t2 = t + carry;
-            const u64 c2 = (t2 < t) ? 1ULL : 0ULL;
-            out.m_limbs[i + j] = t2;
-            carry = hi + c1 + c2;
-        }
-        usize k = i + b.m_limbs.size();
-        while (carry != 0) {
-            const u64 t = out.m_limbs[k] + carry;
-            carry = (t < carry) ? 1ULL : 0ULL;
-            out.m_limbs[k] = t;
-            ++k;
-        }
-    }
+    BigInt out = BigInt::mul_magnitude(a, b);
     out.m_negative = a.m_negative != b.m_negative;
     out.normalize();
     return out;
@@ -407,9 +622,16 @@ BigInt operator*(const BigInt& a, const BigInt& b) {
 
 void BigInt::div_mod(const BigInt& a, const BigInt& b, BigInt& q, BigInt& r) {
     KEEL_ASSERT(!b.is_zero());
-    q = BigInt();
-    r = BigInt();
-    if (a.is_zero()) return;
+    if (a.is_zero()) {
+        q = BigInt();
+        r = BigInt();
+        return;
+    }
+
+    BigInt q_out;
+    BigInt r_out;
+    const bool q_neg = (a.m_negative != b.m_negative);
+    const bool r_neg = a.m_negative;
 
     if (a.m_limbs.size() == 1 && b.m_limbs.size() == 1) {
         const u64 ua = a.m_limbs[0];
@@ -417,13 +639,15 @@ void BigInt::div_mod(const BigInt& a, const BigInt& b, BigInt& q, BigInt& r) {
         const u64 uq = ua / ub;
         const u64 ur = ua % ub;
         if (uq != 0) {
-            q.m_limbs.push_back(uq);
-            q.m_negative = (a.m_negative != b.m_negative);
+            q_out.m_limbs.push_back(uq);
+            q_out.m_negative = q_neg;
         }
         if (ur != 0) {
-            r.m_limbs.push_back(ur);
-            r.m_negative = a.m_negative;
+            r_out.m_limbs.push_back(ur);
+            r_out.m_negative = r_neg;
         }
+        q = keel::move(q_out);
+        r = keel::move(r_out);
         return;
     }
 
@@ -435,10 +659,12 @@ void BigInt::div_mod(const BigInt& a, const BigInt& b, BigInt& q, BigInt& r) {
     to_digits32(b.m_limbs, vd);
     div_mod_digits(ud, vd, qd, rd);
 
-    from_digits32(qd, q.m_limbs);
-    from_digits32(rd, r.m_limbs);
-    q.m_negative = (a.m_negative != b.m_negative) && !q.m_limbs.empty();
-    r.m_negative = a.m_negative && !r.m_limbs.empty();
+    from_digits32(qd, q_out.m_limbs);
+    from_digits32(rd, r_out.m_limbs);
+    q_out.m_negative = q_neg && !q_out.m_limbs.empty();
+    r_out.m_negative = r_neg && !r_out.m_limbs.empty();
+    q = keel::move(q_out);
+    r = keel::move(r_out);
 }
 
 BigInt operator/(const BigInt& a, const BigInt& b) {
@@ -454,6 +680,117 @@ BigInt operator%(const BigInt& a, const BigInt& b) {
     BigInt::div_mod(a, b, q, r);
     return r;
 }
+
+BigInt BigInt::mod_euclid(const BigInt& a, const BigInt& m) {
+    KEEL_ASSERT(!m.is_zero());
+    const BigInt abs_m = m.abs();
+    BigInt r = a % abs_m;
+    if (r.is_negative()) {
+        r += abs_m;
+    }
+    return r;
+}
+
+BigInt BigInt::operator~() const {
+    // Two's-complement NOT: ~x == -(x + 1).
+    return -(*this + BigInt(i64{1}));
+}
+
+// kind: 0 = AND, 1 = OR, 2 = XOR (exact infinite two's-complement semantics).
+BigInt BigInt::bitwise_op(const BigInt& a, const BigInt& b, i32 kind) {
+    const usize na = a.m_limbs.size();
+    const usize nb = b.m_limbs.size();
+
+    // Fast path for non-negative operands.
+    if (!a.m_negative && !b.m_negative) {
+        BigInt out;
+        if (kind == 0) {
+            const usize n = na < nb ? na : nb;
+            out.m_limbs.reserve(n);
+            for (usize i = 0; i < n; ++i) {
+                out.m_limbs.push_back(a.m_limbs[i] & b.m_limbs[i]);
+            }
+        } else if (kind == 1) {
+            const usize n = na > nb ? na : nb;
+            out.m_limbs.reserve(n);
+            for (usize i = 0; i < n; ++i) {
+                const u64 la = i < na ? a.m_limbs[i] : 0ULL;
+                const u64 lb = i < nb ? b.m_limbs[i] : 0ULL;
+                out.m_limbs.push_back(la | lb);
+            }
+        } else {
+            const usize n = na > nb ? na : nb;
+            out.m_limbs.reserve(n);
+            for (usize i = 0; i < n; ++i) {
+                const u64 la = i < na ? a.m_limbs[i] : 0ULL;
+                const u64 lb = i < nb ? b.m_limbs[i] : 0ULL;
+                out.m_limbs.push_back(la ^ lb);
+            }
+        }
+        out.normalize();
+        return out;
+    }
+
+    // General infinite two's-complement path.
+    const usize n = na > nb ? na : nb;
+    const u64 sign_a = a.m_negative ? 1ULL : 0ULL;
+    const u64 sign_b = b.m_negative ? 1ULL : 0ULL;
+    u64 sign_res = 0ULL;
+    if (kind == 0) {
+        sign_res = sign_a & sign_b;
+    } else if (kind == 1) {
+        sign_res = sign_a | sign_b;
+    } else {
+        sign_res = sign_a ^ sign_b;
+    }
+
+    u64 carry_a = a.m_negative ? 1ULL : 0ULL;
+    u64 carry_b = b.m_negative ? 1ULL : 0ULL;
+    u64 carry_out = sign_res ? 1ULL : 0ULL;
+
+    BigInt out;
+    out.m_limbs.reserve(n + 1);
+    for (usize i = 0; i < n; ++i) {
+        u64 ta = i < na ? a.m_limbs[i] : 0ULL;
+        if (a.m_negative) {
+            const u64 inv = ~ta;
+            ta = inv + carry_a;
+            carry_a = (ta < inv) ? 1ULL : 0ULL;
+        }
+        u64 tb = i < nb ? b.m_limbs[i] : 0ULL;
+        if (b.m_negative) {
+            const u64 inv = ~tb;
+            tb = inv + carry_b;
+            carry_b = (tb < inv) ? 1ULL : 0ULL;
+        }
+        u64 tr = 0ULL;
+        if (kind == 0) {
+            tr = ta & tb;
+        } else if (kind == 1) {
+            tr = ta | tb;
+        } else {
+            tr = ta ^ tb;
+        }
+        if (sign_res != 0ULL) {
+            const u64 inv = ~tr;
+            const u64 mag = inv + carry_out;
+            carry_out = (mag < inv) ? 1ULL : 0ULL;
+            out.m_limbs.push_back(mag);
+        } else {
+            out.m_limbs.push_back(tr);
+        }
+    }
+    if (sign_res != 0ULL && carry_out != 0ULL) {
+        out.m_limbs.push_back(1ULL);
+    }
+    out.m_negative = (sign_res != 0ULL);
+    out.normalize();
+    return out;
+}
+
+BigInt operator&(const BigInt& a, const BigInt& b) { return BigInt::bitwise_op(a, b, 0); }
+BigInt operator|(const BigInt& a, const BigInt& b) { return BigInt::bitwise_op(a, b, 1); }
+BigInt operator^(const BigInt& a, const BigInt& b) { return BigInt::bitwise_op(a, b, 2); }
 
 bool operator==(const BigInt& a, const BigInt& b) noexcept {
     return a.m_negative == b.m_negative && a.m_limbs == b.m_limbs;
@@ -487,6 +824,7 @@ BigInt BigInt::operator-() const {
 
 BigInt BigInt::operator<<(usize bits) const {
     if (is_zero()) return BigInt();
+    if (bits == 0) return *this;
     const usize limb_off = bits / 64;
     const u32 bit_off = as<u32>(bits % 64);
     BigInt out;
@@ -508,6 +846,7 @@ BigInt BigInt::operator<<(usize bits) const {
 
 BigInt BigInt::operator>>(usize bits) const {
     if (is_zero()) return BigInt();
+    if (bits == 0) return *this;
     const usize limb_off = bits / 64;
     const u32 bit_off = as<u32>(bits % 64);
 
@@ -575,6 +914,90 @@ BigInt BigInt::gcd(const BigInt& a, const BigInt& b) {
     return x;
 }
 
+BigInt BigInt::gcd_ext(const BigInt& a, const BigInt& b, BigInt& x, BigInt& y) {
+    const bool neg_a = a.m_negative;
+    const bool neg_b = b.m_negative;
+    BigInt old_r = a.abs();
+    BigInt r = b.abs();
+    BigInt old_s(i64{1});
+    BigInt s(i64{0});
+    BigInt old_t(i64{0});
+    BigInt t(i64{1});
+
+    while (!r.is_zero()) {
+        BigInt q;
+        BigInt rem;
+        div_mod(old_r, r, q, rem);
+        old_r = keel::move(r);
+        r = keel::move(rem);
+
+        BigInt next_s = old_s - q * s;
+        old_s = keel::move(s);
+        s = keel::move(next_s);
+
+        BigInt next_t = old_t - q * t;
+        old_t = keel::move(t);
+        t = keel::move(next_t);
+    }
+
+    if (neg_a) old_s = -old_s;
+    if (neg_b) old_t = -old_t;
+    x = keel::move(old_s);
+    y = keel::move(old_t);
+    return old_r;
+}
+
+Optional<BigInt> BigInt::inv_mod(const BigInt& a, const BigInt& m) {
+    if (m.is_zero() || m.is_negative()) return kNullOpt;
+    if (m == BigInt(i64{1})) return BigInt(i64{0});
+    BigInt x;
+    BigInt y;
+    const BigInt g = gcd_ext(mod_euclid(a, m), m, x, y);
+    if (g != BigInt(i64{1})) return kNullOpt;
+    return mod_euclid(x, m);
+}
+
+Optional<BigInt> BigInt::pow_mod(const BigInt& base, const BigInt& exp, const BigInt& mod) {
+    if (mod.is_zero() || mod.is_negative()) return kNullOpt;
+    if (mod == BigInt(i64{1})) return BigInt(i64{0});
+    if (exp.is_negative()) {
+        Optional<BigInt> inv = inv_mod(base, mod);
+        if (!inv) return kNullOpt;
+        return pow_mod_pos(*inv, -exp, mod);
+    }
+    return pow_mod_pos(base, exp, mod);
+}
+
+i32 BigInt::jacobi(const BigInt& a, const BigInt& n) {
+    KEEL_ASSERT(!n.is_negative() && !n.is_zero() && (n.low_limb() & 1ULL) == 1ULL);
+    if (n.is_negative() || n.is_zero() || (n.low_limb() & 1ULL) == 0ULL) return 0;
+    if (n == BigInt(i64{1})) return 1;
+
+    BigInt x = mod_euclid(a, n);
+    BigInt m = n;
+    i32 result = 1;
+
+    while (!x.is_zero()) {
+        const usize tz = x.trailing_zeros();
+        if (tz > 0) {
+            x >>= tz;
+            if ((tz & 1u) != 0u) {
+                const u64 m_mod8 = m.low_limb() & 7ULL;
+                if (m_mod8 == 3ULL || m_mod8 == 5ULL) result = -result;
+            }
+        }
+        BigInt tmp = keel::move(x);
+        x = keel::move(m);
+        m = keel::move(tmp);
+        if ((x.low_limb() & 3ULL) == 3ULL && (m.low_limb() & 3ULL) == 3ULL) {
+            result = -result;
+        }
+        x = x % m;
+    }
+
+    return (m == BigInt(i64{1})) ? result : 0;
+}
+
 BigInt BigInt::pow_u64(const BigInt& base, u64 exp) {
     BigInt result(i64{1});
     BigInt b = base;
@@ -588,16 +1011,13 @@ BigInt BigInt::pow_u64(const BigInt& base, u64 exp) {
 
 BigInt BigInt::lcm(const BigInt& a, const BigInt& b) {
     if (a.is_zero() || b.is_zero()) return BigInt();
-    return (a * b).abs() / gcd(a, b);
+    return (a.abs() / gcd(a, b)) * b.abs();
 }
 
-bool BigInt::sqrt_exact(BigInt& out) const {
-    if (m_negative) return false;
-    if (is_zero()) {
-        out = BigInt();
-        return true;
-    }
-    // Newton iteration on x -> (x + n/x)/2, started above sqrt(n).
+Optional<BigInt> BigInt::isqrt() const {
+    if (m_negative) return kNullOpt;
+    if (is_zero()) return BigInt();
+    // Newton iteration on x -> (x + n/x)/2, started strictly above sqrt(n).
     BigInt x = BigInt(i64{1}) << (bit_length() / 2 + 1);
     for (;;) {
         BigInt q;
@@ -607,8 +1027,14 @@ bool BigInt::sqrt_exact(BigInt& out) const {
         if (y >= x) break;
         x = keel::move(y);
     }
-    if (x * x == *this) {
-        out = keel::move(x);
+    return x;
+}
+
+bool BigInt::sqrt_exact(BigInt& out) const {
+    Optional<BigInt> root = isqrt();
+    if (!root) return false;
+    if ((*root) * (*root) == *this) {
+        out = keel::move(*root);
         return true;
     }
     return false;
@@ -661,7 +1087,7 @@ f64 BigInt::to_f64() const noexcept {
     }
     const u64 hi = m_limbs[n - 1];
     const u64 lo = m_limbs[n - 2];
-    const i32 lz = nlz64(hi);
+    const i32 lz = keel::countl_zero(hi);
     // Align the top 64 bits of the magnitude into `top64`.
     const u64 top64 = (lz == 0) ? hi : ((hi << lz) | (lo >> (64 - lz)));
     // Round the top 64-bit word to 53 IEEE-754 mantissa bits (round-to-nearest-even).
@@ -677,30 +1103,163 @@ f64 BigInt::to_f64() const noexcept {
     return m_negative ? -scaled : scaled;
 }
 
+BigInt BigInt::from_bytes_be(ArrayRef<u8> bytes) {
+    usize start = 0;
+    while (start < bytes.size() && bytes[start] == 0u) ++start;
+    const usize len = bytes.size() - start;
+    if (len == 0) return BigInt();
+
+    const usize nlimbs = (len + 7) / 8;
+    BigInt out;
+    out.m_limbs.assign(nlimbs, 0ULL);
+    for (usize i = 0; i < len; ++i) {
+        const u8 b = bytes[bytes.size() - 1 - i];
+        out.m_limbs[i / 8] |= as<u64>(b) << ((i % 8) * 8);
+    }
+    out.normalize();
+    return out;
+}
+
+BigInt BigInt::from_bytes_le(ArrayRef<u8> bytes) {
+    usize len = bytes.size();
+    while (len > 0 && bytes[len - 1] == 0u) --len;
+    if (len == 0) return BigInt();
+
+    const usize nlimbs = (len + 7) / 8;
+    BigInt out;
+    out.m_limbs.assign(nlimbs, 0ULL);
+    for (usize i = 0; i < len; ++i) {
+        out.m_limbs[i / 8] |= as<u64>(bytes[i]) << ((i % 8) * 8);
+    }
+    out.normalize();
+    return out;
+}
+
+Array<u8> BigInt::to_bytes_be(usize min_len, Allocator* alloc) const {
+    const usize blen = byte_length();
+    const usize out_len = blen > min_len ? blen : min_len;
+    Array<u8> out(out_len, u8{0}, alloc);
+    for (usize i = 0; i < blen; ++i) {
+        out[out_len - 1 - i] = as<u8>((m_limbs[i / 8] >> ((i % 8) * 8)) & 0xFFULL);
+    }
+    return out;
+}
+
+Array<u8> BigInt::to_bytes_le(usize min_len, Allocator* alloc) const {
+    const usize blen = byte_length();
+    const usize out_len = blen > min_len ? blen : min_len;
+    Array<u8> out(out_len, u8{0}, alloc);
+    for (usize i = 0; i < blen; ++i) {
+        out[i] = as<u8>((m_limbs[i / 8] >> ((i % 8) * 8)) & 0xFFULL);
+    }
+    return out;
+}
+
 String BigInt::to_string(Allocator* alloc) const {
     if (is_zero()) return String::from("0", alloc);
-    const BigInt chunk(kPow10_19);
-    Array<u64> chunks(alloc);
+    constexpr u32 kChunkBase = 1000000000u; // 10^9 < 2^32
+    Array<u32> chunks(alloc);
     BigInt m = abs();
     while (!m.is_zero()) {
         BigInt q;
-        BigInt r;
-        div_mod(m, chunk, q, r);
-        chunks.push_back(r.low_limb());
+        const u32 rem = div_mod_u32_mag(m, kChunkBase, q);
+        chunks.push_back(rem);
         m = keel::move(q);
     }
     String digits(alloc);
-    digits.reserve(chunks.size() * 19 + (m_negative ? 1 : 0));
+    digits.reserve(chunks.size() * 9 + (m_negative ? 1 : 0));
     if (m_negative) digits.push_back('-');
     for (usize i = chunks.size(); i-- > 0;) {
-        char buf[32];
-        const usize n = keel::format_u64(buf, sizeof(buf), chunks[i]);
-        if (i + 1 < chunks.size() && n < 19) {
-            for (usize z = 0; z < 19 - n; ++z) digits.push_back('0');
+        char buf[16];
+        const usize n = keel::format_u64(buf, sizeof(buf), as<u64>(chunks[i]));
+        if (i + 1 < chunks.size() && n < 9) {
+            for (usize z = 0; z < 9 - n; ++z) digits.push_back('0');
         }
         digits.append(StringRef(buf, n));
     }
     return digits;
+}
+
+String BigInt::to_string_radix(i32 base, bool uppercase, Allocator* alloc) const {
+    KEEL_ASSERT(base >= 2 && base <= 36);
+    if (base < 2 || base > 36) return String(alloc);
+    if (base == 10) return to_string(alloc);
+    if (is_zero()) return String::from("0", alloc);
+
+    const char* alphabet = uppercase ? kDigitsUpper : kDigitsLower;
+    const u32 ubase = as<u32>(base);
+
+    // Direct O(N) limb extraction for power-of-2 bases (2, 4, 8, 16, 32).
+    if ((ubase & (ubase - 1u)) == 0u) {
+        const u32 bits_per_digit = as<u32>(keel::countr_zero(ubase));
+        const u64 mask = (1ULL << bits_per_digit) - 1ULL;
+        const usize total_bits = bit_length();
+        const usize ndigits = (total_bits + bits_per_digit - 1) / bits_per_digit;
+        String out(alloc);
+        out.reserve(ndigits + (m_negative ? 1 : 0));
+        if (m_negative) out.push_back('-');
+        for (usize d = ndigits; d-- > 0;) {
+            const usize bit_pos = d * bits_per_digit;
+            const usize limb = bit_pos / 64;
+            const u32 off = as<u32>(bit_pos % 64);
+            u64 val = m_limbs[limb] >> off;
+            if (off + bits_per_digit > 64 && limb + 1 < m_limbs.size()) {
+                val |= m_limbs[limb + 1] << (64 - off);
+            }
+            out.push_back(alphabet[val & mask]);
+        }
+        return out;
+    }
+
+    // General base: divide repeatedly by largest base^k fitting in u32.
+    u32 chunk_base = 1u;
+    usize chunk_digits = 0;
+    while (chunk_base <= Limits<u32>::kMax / ubase) {
+        chunk_base *= ubase;
+        ++chunk_digits;
+    }
+
+    Array<u32> chunks(alloc);
+    BigInt m = abs();
+    while (!m.is_zero()) {
+        BigInt q;
+        chunks.push_back(div_mod_u32_mag(m, chunk_base, q));
+        m = keel::move(q);
+    }
+
+    String out(alloc);
+    out.reserve(chunks.size() * chunk_digits + (m_negative ? 1 : 0));
+    if (m_negative) out.push_back('-');
+
+    for (usize i = chunks.size(); i-- > 0;) {
+        char buf[32];
+        u32 v = chunks[i];
+        usize len = 0;
+        do {
+            buf[len++] = alphabet[v % ubase];
+            v /= ubase;
+        } while (v != 0u);
+        if (i + 1 < chunks.size()) {
+            while (len < chunk_digits) {
+                buf[len++] = '0';
+            }
+        }
+        for (usize k = len; k-- > 0;) {
+            out.push_back(buf[k]);
+        }
+    }
+    return out;
+}
+
+String BigInt::to_hex(bool uppercase, bool prefix, Allocator* alloc) const {
+    if (!prefix) return to_string_radix(16, uppercase, alloc);
+    String mag = abs().to_string_radix(16, uppercase, alloc);
+    String out(alloc);
+    out.reserve(mag.size() + (m_negative ? 3 : 2));
+    if (m_negative) out.push_back('-');
+    out.append("0x");
+    out.append(mag);
+    return out;
 }
 
 bool BigInt::try_parse(BigInt& out, StringRef s) {
@@ -736,21 +1295,88 @@ bool BigInt::try_parse(BigInt& out, StringRef s) {
     return true;
 }
 
+bool BigInt::try_parse_radix(BigInt& out, StringRef s, i32 base) {
+    out = BigInt();
+    if (base < 2 || base > 36) return false;
+    if (base == 10) return try_parse(out, s);
+
+    usize i = 0;
+    bool negative = false;
+    if (i < s.size() && (s[i] == '+' || s[i] == '-')) {
+        negative = (s[i] == '-');
+        ++i;
+    }
+    if (i >= s.size()) return false;
+    for (char ch : s.substr(i)) {
+        const i32 d = decode_digit(ch);
+        if (d < 0 || d >= base) return false;
+    }
+
+    const u64 ubase = as<u64>(base);
+    u64 max_pow = 1ULL;
+    usize chunk_max = 0;
+    while (max_pow <= Limits<u64>::kMax / ubase) {
+        max_pow *= ubase;
+        ++chunk_max;
+    }
+
+    const usize ndigits = s.size() - i;
+    usize lead = ndigits % chunk_max;
+    if (lead == 0) lead = chunk_max;
+
+    BigInt v;
+    usize pos = i;
+    while (pos < s.size()) {
+        const usize len = (pos == i) ? lead : chunk_max;
+        u64 c = 0;
+        u64 p = 1ULL;
+        for (usize k = 0; k < len; ++k) {
+            c = c * ubase + as<u64>(decode_digit(s[pos + k]));
+            p *= ubase;
+        }
+        v = v * BigInt(p) + BigInt(c);
+        pos += len;
+    }
+    v.m_negative = negative;
+    v.normalize();
+    out = keel::move(v);
+    return true;
+}
+
+bool BigInt::try_parse_hex(BigInt& out, StringRef s) {
+    out = BigInt();
+    usize i = 0;
+    bool negative = false;
+    if (i < s.size() && (s[i] == '+' || s[i] == '-')) {
+        negative = (s[i] == '-');
+        ++i;
+    }
+    if (i + 2 <= s.size() && s[i] == '0' && (s[i + 1] == 'x' || s[i + 1] == 'X')) {
+        i += 2;
+    }
+    if (i >= s.size()) return false;
+    // Reject embedded signs after 0x prefix.
+    if (s[i] == '+' || s[i] == '-') return false;
+
+    BigInt mag;
+    if (!try_parse_radix(mag, s.substr(i), 16)) return false;
+    mag.m_negative = negative;
+    mag.normalize();
+    out = keel::move(mag);
+    return true;
+}
+
 bool BigInt::is_prime(const BigInt& n) {
-    static const u64 kBases[] = {2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37};
+    static const u32 kBases[] = {2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37};
     if (n < BigInt(i64{2})) return false;
-    for (u64 b : kBases) {
-        const BigInt bb(b);
-        if (n == bb) return true;
-        BigInt q;
-        BigInt r;
-        div_mod(n, bb, q, r);
-        if (r.is_zero()) return false;
+    for (u32 b : kBases) {
+        if (n.m_limbs.size() == 1 && n.m_limbs[0] == as<u64>(b)) return true;
+        if (mod_u32_mag(n, b) == 0u) return false;
     }
     u64 fits = 0;
     const bool below_2e64 = n.fits_u64(fits);
-    for (u64 b : kBases) {
-        if (!strong_probably_prime(n, BigInt(b))) return false;
+    for (u32 b : kBases) {
+        if (!strong_probably_prime(n, BigInt(as<u64>(b)))) return false;
     }
     if (below_2e64) return true;
     // Probabilistic extension: 38 more fixed-stream bases.
@@ -763,23 +1389,82 @@ bool BigInt::is_prime(const BigInt& n) {
     return true;
 }
 
+Optional<BigInt> BigInt::random_bits(usize bits) {
+    if (bits == 0) return BigInt();
+    const usize nbytes = (bits + 7) / 8;
+    Array<u8> buf(nbytes, u8{0});
+    if (keel::os_random_bytes(MutArrayRef<u8>(buf)).is_err()) {
+        return kNullOpt;
+    }
+    const usize extra = nbytes * 8 - bits;
+    if (extra > 0) {
+        buf[0] = as<u8>(buf[0] & as<u8>(0xFFu >> extra));
+    }
+    return from_bytes_be(ArrayRef<u8>(buf));
+}
+
+Optional<BigInt> BigInt::random_below(const BigInt& upper) {
+    if (upper.is_zero() || upper.is_negative()) return kNullOpt;
+    if (upper == BigInt(i64{1})) return BigInt();
+    const usize bits = (upper - BigInt(i64{1})).bit_length();
+    for (;;) {
+        Optional<BigInt> cand = random_bits(bits);
+        if (!cand) return kNullOpt;
+        if (*cand < upper) return cand;
+    }
+}
+
+Optional<BigInt> BigInt::random_prime(usize bits) {
+    if (bits < 2) return kNullOpt;
+    if (bits == 2) {
+        u8 b = 0;
+        if (keel::os_random_bytes(MutArrayRef<u8>(&b, 1)).is_err()) return kNullOpt;
+        return BigInt(i64{(b & 1u) ? 3 : 2});
+    }
+
+    static const u32 kSmallPrimes[] = {
+        3,   5,   7,   11,  13,  17,  19,  23,  29,  31,  37,  41,  43,  47,  53,  59,  61,  67,
+        71,  73,  79,  83,  89,  97,  101, 103, 107, 109, 113, 127, 131, 137, 139, 149, 151, 157,
+        163, 167, 173, 179, 181, 191, 193, 197, 199, 211, 223, 227, 229, 233, 239, 241, 251,
+    };
+
+    for (;;) {
+        Optional<BigInt> cand = random_bits(bits);
+        if (!cand) return kNullOpt;
+        cand->set_bit(bits - 1);
+        cand->set_bit(0);
+
+        bool composite = false;
+        for (u32 p : kSmallPrimes) {
+            if (cand->m_limbs.size() == 1 && cand->m_limbs[0] == as<u64>(p)) {
+                return cand;
+            }
+            if (mod_u32_mag(*cand, p) == 0u) {
+                composite = true;
+                break;
+            }
+        }
+        if (composite) continue;
+        if (is_prime(*cand)) return cand;
+    }
+}
+
 Array<PrimeFactor> BigInt::factorize(const BigInt& n_in, Allocator* alloc) {
     KEEL_ASSERT(!(n_in < BigInt(i64{1})));
     Array<PrimeFactor> out(alloc);
     if (n_in == BigInt(i64{1})) return out;
     BigInt n = n_in;
-    static const u64 kSmall[] = {2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37};
-    for (u64 p : kSmall) {
+    static const u32 kSmall[] = {2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37};
+    for (u32 p : kSmall) {
         i32 e = 0;
         for (;;) {
             BigInt q;
-            BigInt r;
-            div_mod(n, BigInt(p), q, r);
-            if (!r.is_zero()) break;
+            const u32 rem = div_mod_u32_mag(n, p, q);
+            if (rem != 0u) break;
             n = keel::move(q);
             ++e;
         }
-        if (e != 0) out.push_back(PrimeFactor{BigInt(p), e});
+        if (e != 0) out.push_back(PrimeFactor{BigInt(as<u64>(p)), e});
     }
     Array<BigInt> rest(alloc);
     if (n != BigInt(i64{1})) rest.push_back(keel::move(n));
